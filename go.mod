@@ -1,4 +1,4 @@
-module github.com/akatis/go-auth/v3
+module github.com/dahaiyiyimcom/auth/v3
 
 go 1.20
 

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/akatis/go-auth/v3/test/authTest"
-	"github.com/akatis/go-auth/v3/test/handler"
+	"github.com/dahaiyiyimcom/auth/v3/test/authTest"
+	"github.com/dahaiyiyimcom/auth/v3/test/handler"
 	"github.com/gofiber/fiber/v2"
 	"log"
 )

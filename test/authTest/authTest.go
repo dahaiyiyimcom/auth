@@ -1,7 +1,7 @@
 package authTest
 
 import (
-	"github.com/akatis/go-auth/v3"
+	"github.com/dahaiyiyimcom/auth/v3"
 	"time"
 )
 
