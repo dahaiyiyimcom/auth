@@ -5,10 +5,10 @@ The purpose of this package is to _generate jwt token_, _provide session control
 ## How can use this package?
 #### 1- First of all load packages and import.
 ```cmd 
-go get "github.com/dahaiyiyim/auth/v3"
+go get "github.com/dahaiyiyimcom/auth/v3"
 ```
 ```go
-import "github.com/dahaiyiyim/auth/v3"
+import "github.com/dahaiyiyimcom/auth/v3"
 ```
 #### 2- Secondly create Auth variable.
 Create an "auth" directory and define a global variable there to get the Auth struct with the New method.
