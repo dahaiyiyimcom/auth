@@ -8,7 +8,7 @@ const AllUser = 999
 type Config struct {
 	Header              HeaderConfig
 	Payload             PayloadConfig
-	Redis               RedisConfig
+	Couchbase           CouchbaseConfig
 	JwtSecretKey        string
 	EndpointPermissions map[string]int
 }

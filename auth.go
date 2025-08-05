@@ -1,11 +1,12 @@
 package auth
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/couchbase/gocb/v2"
+	"github.com/dahaiyiyimcom/auth/v4/pkg"
 	"strings"
 	"time"
 
@@ -17,66 +18,54 @@ type Auth struct {
 	Payload             string
 	JwtSecretKey        []byte
 	AccessToken         string
+	Couchbase           *CouchbaseStore
 	EndPointPermissions map[string]int
 }
 
 func New(config *Config) *Auth {
-	return &Auth{
+	auth := &Auth{
 		JwtSecretKey:        []byte(config.JwtSecretKey),
 		EndPointPermissions: config.EndpointPermissions,
 	}
+
+	couchbaseStore, err := GetCouchbaseStore(config.Couchbase)
+	if err != nil {
+		panic(err)
+	}
+	auth.Couchbase = couchbaseStore
+
+	return auth
 }
 
 // CreateAccessToken generates a new JWT token with the given user information
-func (a *Auth) CreateAccessToken(uuid string, roles []int, shopId, companyId *int) string {
-	header := HeaderConfig{
-		Alg: "HS256",
-		Typ: "JWT",
-	}
-
+func (a *Auth) CreateAccessToken(uuid, userAgent string, roles []int, shopId, companyId *int) (string, error) {
 	payload := PayloadConfig{
 		Uuid:      uuid,
 		Roles:     roles,
 		ShopID:    shopId,
 		CompanyID: companyId,
-		ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+		ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		IssuedAt:  time.Now().Unix(),
 	}
 
-	// Serialize header and payload to JSON
-	jsonHeader, _ := json.Marshal(header)
-	jsonPayload, _ := json.Marshal(payload)
+	// Use CreateJWT to generate token and signature
+	token, signature, err := CreateJWT(a.JwtSecretKey, payload)
+	if err != nil {
+		return "", err
+	}
 
-	// Encode header and payload using Base64 URL encoding
-	a.Header = base64.RawURLEncoding.EncodeToString(jsonHeader)
-	a.Payload = base64.RawURLEncoding.EncodeToString(jsonPayload)
+	// Save session in Couchbase
+	err = a.SaveSessionToCouchbase(uuid, signature, userAgent)
+	if err != nil {
+		return "", err
+	}
 
-	headerPayload := a.Header + "." + a.Payload
-
-	// Generate signature using HMAC with SHA-256
-	hasher := hmac.New(sha256.New, a.JwtSecretKey)
-	hasher.Write([]byte(headerPayload))
-	signature := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
-
-	token := headerPayload + "." + signature
-	a.AccessToken = token
-
-	return token
+	return token, nil
 }
 
 // TokenVerify verifies the token signature
 func (a *Auth) TokenVerify(signature string) error {
-	sign := a.Header + "." + a.Payload
-
-	hasher := hmac.New(sha256.New, a.JwtSecretKey)
-	hasher.Write([]byte(sign))
-	expectedSignature := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
-
-	if signature != expectedSignature {
-		return errors.New("failed to verify token signature")
-	}
-
-	return nil
+	return VerifyJWT(a.JwtSecretKey, a.Header, a.Payload, signature)
 }
 
 // GetUUID extracts the UUID from the token
@@ -162,13 +151,17 @@ func (a *Auth) GetCompanyID(authHeader string) (int, error) {
 // Middleware performs authentication and authorization
 func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 	var response Response
-
+	// 1. Authorization header check
 	authHeader := ctx.Get("Authorization")
-	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-		response.Message = "invalid token"
+	if authHeader == "" {
+		response.Message = "missing authorization header"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
-
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		response.Message = "invalid authorization format"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+	// 2. Parse token
 	a.AccessToken = strings.TrimPrefix(authHeader, "Bearer ")
 	tokenParts := strings.Split(a.AccessToken, ".")
 	if len(tokenParts) != 3 {
@@ -176,88 +169,81 @@ func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
 
-	a.Header, a.Payload = tokenParts[0], tokenParts[1]
-
-	jwtPayload, _ := base64.RawURLEncoding.DecodeString(a.Payload)
-	var payload PayloadConfig
-	if err := json.Unmarshal(jwtPayload, &payload); err != nil {
+	headerPart, payloadPart, signature := tokenParts[0], tokenParts[1], tokenParts[2]
+	a.Header, a.Payload = headerPart, payloadPart
+	// 3. Decode payload
+	payload, err := DecodePayload(payloadPart)
+	if err != nil {
 		response.Message = "invalid payload"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+	// 4. Verify signature
+	if err := VerifyJWT(a.JwtSecretKey, headerPart, payloadPart, signature); err != nil {
+		response.Message = "invalid token signature"
 		return response.HttpResponse(ctx, fiber.StatusForbidden)
 	}
-
-	if err := a.TokenVerify(tokenParts[2]); err != nil {
-		response.Message = "invalid signature"
-		return response.HttpResponse(ctx, fiber.StatusForbidden)
-	}
-
+	// 5. Check expiration
 	if payload.ExpiresAt < time.Now().Unix() {
 		response.Message = "token expired"
 		return response.HttpResponse(ctx, fiber.StatusForbidden)
 	}
 
-	// Check user permission by matching endpoint with required permission
+	// 6. Validate session in Couchbase
+	err = a.GetSessionFromCouchbase(payload.Uuid, signature)
+	if err != nil {
+		response.Message = "session not found or invalid"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+
+	// 7. Authorization: Check user roles for the requested endpoint
 	requestedPath := ctx.Path()
-	matchedPermission, matched := matchPathWithPermission(requestedPath, a.EndPointPermissions)
+	matchedPermission, matched := pkg.MatchPathWithPermission(requestedPath, a.EndPointPermissions)
 	if !matched {
-		response.Message = "access denied"
+		response.Message = "access denied: endpoint not recognized"
 		return response.HttpResponse(ctx, fiber.StatusForbidden)
 	}
 
 	// Check if user's roles include the required permission
-	if PermissionsContains(payload.Roles, matchedPermission) {
-		return ctx.Next()
+	if !PermissionsContains(payload.Roles, matchedPermission) {
+		response.Message = "access denied"
+		return response.HttpResponse(ctx, fiber.StatusForbidden)
 	}
 
-	response.Message = "access denied"
-	return response.HttpResponse(ctx, fiber.StatusForbidden)
+	return ctx.Next()
 }
 
-// matchPathWithPermission matches the requested path with defined permissions
-func matchPathWithPermission(requestedPath string, dynamicPermissions map[string]int) (int, bool) {
-	for pattern, permission := range dynamicPermissions {
-		if matchRoute(pattern, requestedPath) {
-			return permission, true
-		}
+func (a *Auth) SaveSessionToCouchbase(uuid, tokenSignature, userAgent string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	key := uuid + ":" + tokenSignature
+
+	session := SessionData{
+		Payload:   a.Payload,
+		UserAgent: userAgent,
+		CreatedAt: time.Now().Unix(),
 	}
-	return 0, false
+
+	_, err := a.Couchbase.Collection.Upsert(key, session, &gocb.UpsertOptions{Context: ctx})
+	return err
 }
 
-// matchRoute compares a route pattern with an actual path
-//   - routeDef: e.g. /api/test/:id
-//   - path: e.g. /api/test/453
-func matchRoute(routeDef, path string) bool {
-	defParts := strings.Split(strings.Trim(routeDef, "/"), "/")
-	pathParts := strings.Split(strings.Trim(path, "/"), "/")
+func (a *Auth) GetSessionFromCouchbase(uuid, tokenSignature string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	// Return false early if segment lengths don't match
-	if len(defParts) != len(pathParts) {
-		return false
-	}
+	key := uuid + ":" + tokenSignature
 
-	for i, seg := range defParts {
-		// If segment is a parameter (e.g., :id, :xyz)
-		if strings.HasPrefix(seg, ":") {
-			// // Ensure parameter segment is numeric
-			// if !isNumeric(pathParts[i]) {
-			// 	return false
-			// }
-			continue
-		}
-		// If not a parameter, check for exact match
-		if seg != pathParts[i] {
-			return false
-		}
-	}
-
-	return true
+	_, err := a.Couchbase.Collection.Get(key, &gocb.GetOptions{Context: ctx})
+	return err
 }
 
-// isNumeric checks if a string contains only numeric characters
-func isNumeric(str string) bool {
-	for _, c := range str {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+func (a *Auth) DeleteSessionFromCouchbase(uuid, tokenSignature string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	key := uuid + ":" + tokenSignature
+
+	_, err := a.Couchbase.Collection.Remove(key, &gocb.RemoveOptions{Context: ctx})
+	return err
 }
