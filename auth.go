@@ -25,15 +25,9 @@ type Auth struct {
 func New(config *Config) *Auth {
 	auth := &Auth{
 		JwtSecretKey:        []byte(config.JwtSecretKey),
+		Couchbase:           config.Couchbase,
 		EndPointPermissions: config.EndpointPermissions,
 	}
-
-	couchbaseStore, err := GetCouchbaseStore(config.Couchbase)
-	if err != nil {
-		panic(err)
-	}
-	auth.Couchbase = couchbaseStore
-
 	return auth
 }
 

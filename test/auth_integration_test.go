@@ -1,6 +1,8 @@
 package test
 
 import (
+	"fmt"
+	"github.com/couchbase/gocb/v2"
 	"github.com/dahaiyiyimcom/auth/v4"
 	"github.com/joho/godotenv"
 	"log"
@@ -8,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,18 +24,63 @@ func init() {
 	}
 }
 
+var (
+	storeInstance *auth.CouchbaseStore
+	once          sync.Once
+)
+
+func GetCouchbaseStore(config auth.CouchbaseConfig) (*auth.CouchbaseStore, error) {
+	var err error
+	once.Do(func() {
+		cluster, e := gocb.Connect(config.ConnStr, gocb.ClusterOptions{
+			Username: config.Username,
+			Password: config.Password,
+		})
+		if e != nil {
+			err = e
+			return
+		}
+		err = cluster.WaitUntilReady(config.Timeout, nil)
+		if err != nil {
+			panic(fmt.Sprintf("Cluster is not ready or credentials invalid: %v", err))
+		}
+
+		bucket := cluster.Bucket(config.BucketName)
+		if e = bucket.WaitUntilReady(config.Timeout, nil); e != nil {
+			err = e
+			return
+		}
+
+		scope := bucket.Scope(config.Scope)
+		collection := scope.Collection(config.Collection)
+
+		storeInstance = &auth.CouchbaseStore{
+			Cluster:    cluster,
+			Bucket:     bucket,
+			Collection: collection,
+		}
+	})
+
+	return storeInstance, err
+}
+
 func getTestAuth() *auth.Auth {
+	conf := auth.CouchbaseConfig{
+		ConnStr:    os.Getenv("CB_CONN_STR"), // örn: "couchbase://127.0.0.1"
+		Username:   os.Getenv("CB_USERNAME"), // örn: "Administrator"
+		Password:   os.Getenv("CB_PASSWORD"), // örn: "password"
+		BucketName: os.Getenv("CB_BUCKET"),   // örn: "auth-test"
+		Scope:      os.Getenv("CB_SCOPE"),
+		Collection: os.Getenv("CP_COLLECTION"),
+		Timeout:    5 * time.Second,
+	}
+	cs, err := GetCouchbaseStore(conf)
+	if err != nil {
+		panic(err)
+	}
 	cfg := &auth.Config{
-		JwtSecretKey: "test-secret",
-		Couchbase: auth.CouchbaseConfig{
-			ConnStr:    os.Getenv("CB_CONN_STR"), // örn: "couchbase://127.0.0.1"
-			Username:   os.Getenv("CB_USERNAME"), // örn: "Administrator"
-			Password:   os.Getenv("CB_PASSWORD"), // örn: "password"
-			BucketName: os.Getenv("CB_BUCKET"),   // örn: "auth-test"
-			Scope:      os.Getenv("CB_SCOPE"),
-			Collection: os.Getenv("CP_COLLECTION"),
-			Timeout:    5 * time.Second,
-		},
+		JwtSecretKey:        "test-secret",
+		Couchbase:           cs,
 		EndpointPermissions: map[string]int{"/protected": 1},
 	}
 
