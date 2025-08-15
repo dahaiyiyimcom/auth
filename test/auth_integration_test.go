@@ -117,6 +117,16 @@ func TestMiddleware_With_ValidToken(t *testing.T) {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
 
+	tokenParts := strings.Split(token, ".")
+	if len(tokenParts) != 3 {
+		t.Errorf("token split expected 3 parts, got %d", len(tokenParts))
+	}
+
+	err = authStr.TokenVerify(tokenParts[2])
+	if err != nil {
+		t.Fatalf("TokenVerify error: %v", err)
+	}
+
 	app := fiber.New()
 	app.Use(authStr.Middleware)
 	app.Get("/protected", func(c *fiber.Ctx) error {

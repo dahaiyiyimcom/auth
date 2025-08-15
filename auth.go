@@ -43,7 +43,9 @@ func (a *Auth) CreateAccessToken(uuid, userAgent string, roles []int, shopId, co
 	}
 
 	// Use CreateJWT to generate token and signature
-	token, signature, err := CreateJWT(a.JwtSecretKey, payload)
+	var token, signature string
+	var err error
+	a.Header, a.Payload, token, signature, err = CreateJWT(a.JwtSecretKey, payload)
 	if err != nil {
 		return "", err
 	}

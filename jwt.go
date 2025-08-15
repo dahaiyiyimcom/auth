@@ -27,7 +27,7 @@ type PayloadConfig struct {
 	Subject   string `json:"sub,omitempty"`
 }
 
-func CreateJWT(secretKey []byte, payload PayloadConfig) (string, string, error) {
+func CreateJWT(secretKey []byte, payload PayloadConfig) (string, string, string, string, error) {
 	header := HeaderConfig{Alg: "HS256", Typ: "JWT"}
 
 	jsonHeader, _ := json.Marshal(header)
@@ -42,7 +42,7 @@ func CreateJWT(secretKey []byte, payload PayloadConfig) (string, string, error) 
 	signature := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
 
 	token := headerPayload + "." + signature
-	return token, signature, nil
+	return encodedHeader, encodedPayload, token, signature, nil
 }
 
 func VerifyJWT(secretKey []byte, header, payload, signature string) error {
