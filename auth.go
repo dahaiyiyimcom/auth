@@ -181,7 +181,7 @@ func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 	// 5. Check expiration
 	if payload.ExpiresAt < time.Now().Unix() {
 		response.Message = "token expired"
-		return response.HttpResponse(ctx, fiber.StatusForbidden)
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
 
 	// 6. Validate session in Couchbase
