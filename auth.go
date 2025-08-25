@@ -87,6 +87,21 @@ func (a *Auth) GetUUID(authHeader string) (string, error) {
 
 	return payload.Uuid, nil
 }
+func (a *Auth) GetUUIDFromCookie(token string) (string, error) {
+
+	_, payloadPart, _, err := SplitJWT(token)
+	if err != nil {
+		return "", err
+	}
+
+	payloadBase64, _ := base64.RawURLEncoding.DecodeString(payloadPart)
+	var payload PayloadConfig
+	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
+		return "", errors.New(err.Error())
+	}
+
+	return payload.Uuid, nil
+}
 
 // GetShopID extracts the ShopID from the token
 func (a *Auth) GetShopID(authHeader string) (int, error) {
@@ -115,6 +130,21 @@ func (a *Auth) GetShopID(authHeader string) (int, error) {
 
 	return *payload.ShopID, nil
 }
+func (a *Auth) GetShopIDFromCookie(token string) (int, error) {
+	_, payloadPart, _, err := SplitJWT(token)
+	if err != nil {
+		return 0, err
+	}
+	var payload PayloadConfig
+	payloadBase64, _ := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
+		return 0, errors.New(err.Error())
+	}
+	if payload.ShopID == nil {
+		return 0, errors.New("shopID is nil")
+	}
+	return *payload.ShopID, nil
+}
 
 // GetCompanyID extracts the CompanyID from the token
 func (a *Auth) GetCompanyID(authHeader string) (int, error) {
@@ -141,6 +171,21 @@ func (a *Auth) GetCompanyID(authHeader string) (int, error) {
 		return 0, errors.New("companyID is nil")
 	}
 
+	return *payload.CompanyID, nil
+}
+func (a *Auth) GetCompanyIDFromCookie(token string) (int, error) {
+	_, payloadPart, _, err := SplitJWT(token)
+	if err != nil {
+		return 0, err
+	}
+	var payload PayloadConfig
+	payloadBase64, _ := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
+		return 0, errors.New(err.Error())
+	}
+	if payload.CompanyID == nil {
+		return 0, errors.New("shopID is nil")
+	}
 	return *payload.CompanyID, nil
 }
 
@@ -200,6 +245,67 @@ func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 	}
 
 	// Check if user's roles include the required permission
+	if !PermissionsContains(payload.Roles, matchedPermission) {
+		response.Message = "access denied"
+		return response.HttpResponse(ctx, fiber.StatusForbidden)
+	}
+
+	return ctx.Next()
+}
+
+func (a *Auth) MiddlewareWithCookie(ctx *fiber.Ctx) error {
+	var response Response
+
+	// 1. Auth cookie check
+	accessToken := ctx.Cookies("access_token")
+	if accessToken == "" {
+		response.Message = "access token missing"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+
+	headerPart, payloadPart, signature, err := SplitJWT(accessToken)
+	if err != nil {
+		response.Message = "malformed token"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+
+	// a üzerinde sakla (TokenVerify vb. için)
+	a.AccessToken = accessToken
+	a.Header = headerPart
+	a.Payload = payloadPart
+
+	// 2. Decode payload
+	payload, err := DecodePayload(payloadPart) // mevcut helper'ınızı kullanıyoruz
+	if err != nil {
+		response.Message = "invalid payload"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+
+	// 3. Verify signature
+	if err := VerifyJWT(a.JwtSecretKey, headerPart, payloadPart, signature); err != nil {
+		response.Message = "invalid token signature"
+		return response.HttpResponse(ctx, fiber.StatusForbidden)
+	}
+
+	// 4. Check expiration
+	if payload.ExpiresAt < time.Now().Unix() {
+		response.Message = "token expired"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+
+	// 5. Validate session in Couchbase
+	if err := a.GetSessionFromCouchbase(payload.Uuid, signature); err != nil {
+		response.Message = "session not found or invalid"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
+
+	// 6. Authorization: Check user roles for the requested endpoint
+	requestedPath := ctx.Path()
+	matchedPermission, matched := pkg.MatchPathWithPermission(requestedPath, a.EndPointPermissions)
+	if !matched {
+		response.Message = "access denied: endpoint not recognized"
+		return response.HttpResponse(ctx, fiber.StatusForbidden)
+	}
 	if !PermissionsContains(payload.Roles, matchedPermission) {
 		response.Message = "access denied"
 		return response.HttpResponse(ctx, fiber.StatusForbidden)

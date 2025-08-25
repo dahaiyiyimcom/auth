@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 type HeaderConfig struct {
@@ -65,4 +66,12 @@ func DecodePayload(encodedPayload string) (PayloadConfig, error) {
 	}
 	err = json.Unmarshal(decoded, &payload)
 	return payload, err
+}
+
+func SplitJWT(token string) (headerPart, payloadPart, signature string, err error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", "", "", errors.New("malformed token")
+	}
+	return parts[0], parts[1], parts[2], nil
 }

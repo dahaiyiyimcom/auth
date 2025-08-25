@@ -159,3 +159,113 @@ func TestMiddleware_With_InvalidToken(t *testing.T) {
 		t.Errorf("expected status 401, got %d", resp.StatusCode)
 	}
 }
+
+func TestCreateAccessToken_And_SaveSessionWithCookie(t *testing.T) {
+	authStr := getTestAuth()
+
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1}, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAccessToken error: %v", err)
+	}
+	if token == "" {
+		t.Fatal("CreateAccessToken returned empty token")
+	}
+
+	// Couchbase kaydını kontrol edelim (signature = token'ın 3. parçası)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token split expected 3 parts, got %d", len(parts))
+	}
+	signature := parts[2]
+	if err := authStr.GetSessionFromCouchbase("user123", signature); err != nil {
+		t.Fatalf("Session should exist in Couchbase: %v", err)
+	}
+}
+
+func TestMiddleware_With_ValidTokenWithCookie(t *testing.T) {
+	authStr := getTestAuth()
+
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1}, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAccessToken error: %v", err)
+	}
+
+	// İmza doğrulaması (CreateAccessToken içinde a.Header/a.Payload set edildiği için çalışır)
+	tokenParts := strings.Split(token, ".")
+	if len(tokenParts) != 3 {
+		t.Errorf("token split expected 3 parts, got %d", len(tokenParts))
+	}
+	if err := authStr.TokenVerify(tokenParts[2]); err != nil {
+		t.Fatalf("TokenVerify error: %v", err)
+	}
+
+	app := fiber.New()
+	app.Use(authStr.MiddlewareWithCookie)
+	app.Get("/protected", func(c *fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	// Cookie tabanlı akış: access_token cookie’sini set et
+	req.AddCookie(&http.Cookie{
+		Name:  "access_token",
+		Value: token,
+		Path:  "/",
+	})
+
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestMiddleware_With_InvalidTokenWithCookie(t *testing.T) {
+	authStr := getTestAuth()
+
+	app := fiber.New()
+	app.Use(authStr.MiddlewareWithCookie)
+	app.Get("/protected", func(c *fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	// Geçersiz/bozuk JWT yapısında cookie set edelim
+	req.AddCookie(&http.Cookie{
+		Name:  "access_token",
+		Value: "invalid.token.value",
+		Path:  "/",
+	})
+
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test error: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", resp.StatusCode)
+	}
+}
+
+// (İsteğe bağlı) Cookie hiç yoksa 401 dönüyor mu?
+func TestMiddleware_WithoutAccessTokenCookie(t *testing.T) {
+	authStr := getTestAuth()
+
+	app := fiber.New()
+	app.Use(authStr.MiddlewareWithCookie)
+	app.Get("/protected", func(c *fiber.Ctx) error {
+		return c.SendString("OK")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	// Bilerek cookie set etmiyoruz
+
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test error: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", resp.StatusCode)
+	}
+}
