@@ -19,7 +19,7 @@ type Auth struct {
 	JwtSecretKey        []byte
 	AccessToken         string
 	Couchbase           *CouchbaseStore
-	EndPointPermissions map[string]int
+	EndPointPermissions map[string][]int
 }
 
 func New(config *Config) *Auth {

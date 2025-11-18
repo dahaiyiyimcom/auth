@@ -10,7 +10,7 @@ type Config struct {
 	Payload             PayloadConfig
 	Couchbase           *CouchbaseStore
 	JwtSecretKey        string
-	EndpointPermissions map[string]int
+	EndpointPermissions map[string][]int
 }
 
 func (cfg *Config) init() {
