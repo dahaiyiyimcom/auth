@@ -3,13 +3,13 @@ package pkg
 import "strings"
 
 // MatchPathWithPermission matches the requested path with defined permissions
-func MatchPathWithPermission(requestedPath string, dynamicPermissions map[string]int) (int, bool) {
+func MatchPathWithPermission(requestedPath string, dynamicPermissions map[string][]int) ([]int, bool) {
 	for pattern, permission := range dynamicPermissions {
 		if matchRoute(pattern, requestedPath) {
 			return permission, true
 		}
 	}
-	return 0, false
+	return nil, false
 }
 
 // matchRoute compares a route pattern with an actual path

@@ -74,6 +74,9 @@ func getTestAuth() *auth.Auth {
 		Collection: os.Getenv("CP_COLLECTION"),
 		Timeout:    5 * time.Second,
 	}
+	var perm []int
+	perm = append(perm, 1)
+	perm = append(perm, 2)
 	cs, err := GetCouchbaseStore(conf)
 	if err != nil {
 		panic(err)
@@ -81,7 +84,7 @@ func getTestAuth() *auth.Auth {
 	cfg := &auth.Config{
 		JwtSecretKey:        "test-secret",
 		Couchbase:           cs,
-		EndpointPermissions: map[string]int{"/protected": 1},
+		EndpointPermissions: map[string][]int{"/protected": perm},
 	}
 
 	return auth.New(cfg)
@@ -112,7 +115,7 @@ func TestCreateAccessToken_And_SaveSession(t *testing.T) {
 func TestMiddleware_With_ValidToken(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1, 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -185,7 +188,7 @@ func TestCreateAccessToken_And_SaveSessionWithCookie(t *testing.T) {
 func TestMiddleware_With_ValidTokenWithCookie(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{2}, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
