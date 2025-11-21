@@ -257,8 +257,8 @@ func (a *Auth) MiddlewareWithCookie(ctx *fiber.Ctx) error {
 	var response Response
 
 	// 1. Auth cookie check
-	accessToken := ctx.Cookies("access_token")
-	if accessToken == "" {
+	accessToken, ok := GetAccessTokenCookie(ctx)
+	if !ok {
 		response.Message = "access token missing"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
@@ -348,4 +348,19 @@ func (a *Auth) DeleteSessionFromCouchbase(uuid, tokenSignature string) error {
 
 	_, err := a.Couchbase.Collection.Remove(key, &gocb.RemoveOptions{Context: ctx})
 	return err
+}
+
+func GetAccessTokenCookie(c *fiber.Ctx) (string, bool) {
+	var token string
+	found := false
+
+	c.Context().Request.Header.VisitAllCookie(func(key, value []byte) {
+		k := strings.ToLower(string(key))
+		if strings.Contains(k, "access_token") {
+			token = string(value)
+			found = true
+		}
+	})
+
+	return token, found
 }
