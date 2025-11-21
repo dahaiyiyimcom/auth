@@ -211,7 +211,7 @@ func TestMiddleware_With_ValidTokenWithCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	// Cookie tabanlı akış: access_token cookie’sini set et
 	req.AddCookie(&http.Cookie{
-		Name:  "access_token",
+		Name:  "test_access_token",
 		Value: token,
 		Path:  "/",
 	})
