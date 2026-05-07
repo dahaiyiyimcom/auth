@@ -15,18 +15,18 @@ type HeaderConfig struct {
 }
 
 type PayloadConfig struct {
-	Uuid      string `json:"uuid"`
-	Roles     []int  `json:"roles"`
-	Email     string `json:"email,omitempty"`
-	ShopID    *int   `json:"shop_id,omitempty"`
-	CompanyID *int   `json:"company_id,omitempty"`
-	Audience  string `json:"aud,omitempty"`
-	ExpiresAt int64  `json:"exp,omitempty"`
-	Id        string `json:"jti,omitempty"`
-	IssuedAt  int64  `json:"iat,omitempty"`
-	Issuer    string `json:"iss,omitempty"`
-	NotBefore int64  `json:"nbf,omitempty"`
-	Subject   string `json:"sub,omitempty"`
+	Uuid      string  `json:"uuid"`
+	Roles     []int   `json:"roles"`
+	Email     *string `json:"email,omitempty"`
+	ShopID    *int    `json:"shop_id,omitempty"`
+	CompanyID *int    `json:"company_id,omitempty"`
+	Audience  string  `json:"aud,omitempty"`
+	ExpiresAt int64   `json:"exp,omitempty"`
+	Id        string  `json:"jti,omitempty"`
+	IssuedAt  int64   `json:"iat,omitempty"`
+	Issuer    string  `json:"iss,omitempty"`
+	NotBefore int64   `json:"nbf,omitempty"`
+	Subject   string  `json:"sub,omitempty"`
 }
 
 func CreateJWT(secretKey []byte, payload PayloadConfig) (string, string, string, string, error) {
