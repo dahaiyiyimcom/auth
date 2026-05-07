@@ -32,10 +32,11 @@ func New(config *Config) *Auth {
 }
 
 // CreateAccessToken generates a new JWT token with the given user information
-func (a *Auth) CreateAccessToken(uuid, userAgent string, roles []int, shopId, companyId *int) (string, error) {
+func (a *Auth) CreateAccessToken(uuid, email, userAgent string, roles []int, shopId, companyId *int) (string, error) {
 	payload := PayloadConfig{
 		Uuid:      uuid,
 		Roles:     roles,
+		Email:     email,
 		ShopID:    shopId,
 		CompanyID: companyId,
 		ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),

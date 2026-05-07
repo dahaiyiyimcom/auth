@@ -17,6 +17,7 @@ type HeaderConfig struct {
 type PayloadConfig struct {
 	Uuid      string `json:"uuid"`
 	Roles     []int  `json:"roles"`
+	Email     string `json:"email,omitempty"`
 	ShopID    *int   `json:"shop_id,omitempty"`
 	CompanyID *int   `json:"company_id,omitempty"`
 	Audience  string `json:"aud,omitempty"`
