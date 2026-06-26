@@ -10,6 +10,7 @@ type Config struct {
 	Payload             PayloadConfig
 	Couchbase           *CouchbaseStore
 	JwtSecretKey        string
+	CookieName          string
 	EndpointPermissions map[string][]int
 }
 

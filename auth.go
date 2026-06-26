@@ -18,6 +18,7 @@ type Auth struct {
 	Payload             string
 	JwtSecretKey        []byte
 	AccessToken         string
+	CookieName          string
 	Couchbase           *CouchbaseStore
 	EndPointPermissions map[string][]int
 }
@@ -25,6 +26,7 @@ type Auth struct {
 func New(config *Config) *Auth {
 	auth := &Auth{
 		JwtSecretKey:        []byte(config.JwtSecretKey),
+		CookieName:          config.CookieName,
 		Couchbase:           config.Couchbase,
 		EndPointPermissions: config.EndpointPermissions,
 	}
@@ -258,7 +260,7 @@ func (a *Auth) MiddlewareWithCookie(ctx *fiber.Ctx) error {
 	var response Response
 
 	// 1. Auth cookie check
-	accessToken, ok := GetAccessTokenCookie(ctx)
+	accessToken, ok := GetAccessTokenCookie(ctx, a.CookieName)
 	if !ok {
 		response.Message = "access token missing"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
@@ -351,17 +353,15 @@ func (a *Auth) DeleteSessionFromCouchbase(uuid, tokenSignature string) error {
 	return err
 }
 
-func GetAccessTokenCookie(c *fiber.Ctx) (string, bool) {
-	var token string
+func GetAccessTokenCookie(c *fiber.Ctx, cookieName string) (string, bool) {
+	var value string
 	found := false
 
-	c.Context().Request.Header.VisitAllCookie(func(key, value []byte) {
-		k := strings.ToLower(string(key))
-		if strings.Contains(k, "access_token") {
-			token = string(value)
+	c.Context().Request.Header.VisitAllCookie(func(key, val []byte) {
+		if strings.EqualFold(string(key), cookieName) {
+			value = string(val)
 			found = true
 		}
 	})
-
-	return token, found
+	return value, found
 }
