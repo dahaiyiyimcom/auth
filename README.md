@@ -1,80 +1,91 @@
 # GO AUTH
-## What the purpose of this package?
-The purpose of this package is to _generate jwt token_, _provide session control from Redis_ and _provide an authorization middleware_.
 
-## How can use this package?
-#### 1- First of all load packages and import.
-```cmd 
-go get "github.com/dahaiyiyimcom/auth/v4"
+JWT token generation, Redis-backed session control, and Fiber authorization middleware.
+
+## Installation
+
+```bash
+go get github.com/dahaiyiyimcom/auth/v5
 ```
+
 ```go
-import "github.com/dahaiyiyimcom/auth/v4"
+import "github.com/dahaiyiyimcom/auth/v5"
 ```
-#### 2- Secondly create Auth variable.
-Create an "auth" directory and define a global variable there to get the Auth struct with the New method.
-<br>Create GetAuth() method to use the auth variable in different directories.
-```go 
-var a = auth.New(&auth.Config{
-    JwtSecretKey: string,
-    Couchbase: auth.CouchbaseConfig{
-        ConnStr:    string,
-        Username:   string, 
-        Password:   string,
-        BucketName: string, 
-        Scope:      string,
-        Collection: string,
-        Timeout:    time.Duration,
-    },
-    EndpointPermissions: map[string]int
+
+## Quick Start
+
+Create the Redis-backed session store once and inject it into the auth package.
+
+```go
+store, err := auth.NewRedisStore(auth.RedisConfig{
+    Addr:           "localhost:6379",
+    Password:       "",
+    DB:             0,
+    ConnectTimeout: 5 * time.Second,
+    KeyPrefix:      "auth:",
 })
-
-func GetAuth() *auth.Auth {
-return a
+if err != nil {
+    panic(err)
 }
+defer store.Close()
 
+var a = auth.New(&auth.Config{
+    JwtSecretKey: "secret_key",
+    CookieName:   "access_token",
+    SessionStore: store,
+    EndpointPermissions: map[string][]int{
+        "/api/admin": {auth.Admin},
+        "/api/me":    {auth.AllUser},
+    },
+})
 ```
-#### 3- Use gofiber/fiber/v2 for middleware.
-```go 
+
+Use the middleware with Fiber:
+
+```go
 app := fiber.New()
 api := app.Group("/api")
 
-a := auth.GetAuth()
-
 api.Use(a.Middleware)
 ```
-You can control auth.go file for requirement.
 
-### Creating Access Token
-You can generate tokens using the CreateAccessToken function, which is the method of the Auth struct.
-<br>The generated access token is added to the AccessToken field in the Auth struct.
+Cookie-based auth is also available:
+
 ```go
-token := a.CreateAccessToken("uuid3", "userAgent", nil, nil, nil)
+api.Use(a.MiddlewareWithCookie)
 ```
-The CreateAccess Token function takes two parameters. The first is the uuid of the token holder and the second is its role.
-<br>However, if your system does not use role information, you can specify it as "nil".
 
-### Adding to Couchbase
-Couchbase NoSQL database is used to control the session of the users.
-Each session is stored in Couchbase with a key in the format **uuid:tokenSignature**.
-The stored data includes:
-*   **Payload** (JWT payload)
-*   **User-Agent**
-*   **CreatedAt** timestamp
+## Create Access Token
 
-By using the SaveSessionToCouchbase function, the user’s session is saved to Couchbase.
+`CreateAccessToken` generates the JWT and persists a matching Redis session keyed as `uuid:tokenSignature`.
+
 ```go
-err := a.SaveSessionToCouchbase("uuid3", "tokenSignature", "user-agent-data")
+token, err := a.CreateAccessToken("uuid-123", "user-agent-data", nil, []int{auth.Admin}, nil, nil)
 if err != nil {
     panic(err)
 }
 ```
 
-### Deleting from Couchbase
-If the user’s refresh token has expired or the user logs out, the session information is also deleted from Couchbase.
+## Session Operations
+
+Get and delete session records with the generic session methods:
+
 ```go
-err := a.DeleteSessionFromCouchbase("uuid3", "tokenSignature")
+session, err := a.GetSession("uuid-123", "token-signature")
 if err != nil {
+    panic(err)
+}
+
+_ = session
+
+if err := a.DeleteSession("uuid-123", "token-signature"); err != nil {
     panic(err)
 }
 ```
 
+## v4 to v5 Migration
+
+- Module path changed to `github.com/dahaiyiyimcom/auth/v5`
+- Couchbase-specific config and methods were removed
+- Session persistence now uses the generic `SessionStore` interface
+- `VerifyToken` replaces the old stateful token verification flow
