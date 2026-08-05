@@ -1,13 +1,18 @@
 package auth
 
-func PermissionsContains(s []int, p []int) bool {
+const Admin = 1
+const AllUser = 999
 
-	for _, v := range s {
-		for _, i := range p {
-			if v == Admin || v == i {
-				return true
-			}
-			if i == AllUser {
+func PermissionsContains(roles []int, permissions []int) bool {
+	for _, permission := range permissions {
+		if permission == AllUser {
+			return true
+		}
+	}
+
+	for _, role := range roles {
+		for _, permission := range permissions {
+			if role == Admin || role == permission {
 				return true
 			}
 		}

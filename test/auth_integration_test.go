@@ -1,99 +1,80 @@
 package test
 
 import (
-	"fmt"
-	"github.com/couchbase/gocb/v2"
-	"github.com/dahaiyiyimcom/auth/v4"
-	"github.com/joho/godotenv"
-	"log"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	auth "github.com/dahaiyiyimcom/auth/v5"
 	"github.com/gofiber/fiber/v2"
 )
 
-func init() {
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Println("Warning: could not load .env file, using system environment variables")
+type memoryStore struct {
+	mu       sync.RWMutex
+	sessions map[string]auth.SessionData
+}
+
+func newMemoryStore() *memoryStore {
+	return &memoryStore{
+		sessions: make(map[string]auth.SessionData),
 	}
 }
 
-var (
-	storeInstance *auth.CouchbaseStore
-	once          sync.Once
-)
+func (m *memoryStore) SaveSession(_ context.Context, key string, session auth.SessionData, ttl time.Duration) error {
+	if ttl <= 0 {
+		return errors.New("session ttl must be greater than zero")
+	}
 
-func GetCouchbaseStore(config auth.CouchbaseConfig) (*auth.CouchbaseStore, error) {
-	var err error
-	once.Do(func() {
-		cluster, e := gocb.Connect(config.ConnStr, gocb.ClusterOptions{
-			Username: config.Username,
-			Password: config.Password,
-		})
-		if e != nil {
-			err = e
-			return
-		}
-		err = cluster.WaitUntilReady(config.Timeout, nil)
-		if err != nil {
-			panic(fmt.Sprintf("Cluster is not ready or credentials invalid: %v", err))
-		}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[key] = session
+	return nil
+}
 
-		bucket := cluster.Bucket(config.BucketName)
-		if e = bucket.WaitUntilReady(config.Timeout, nil); e != nil {
-			err = e
-			return
-		}
+func (m *memoryStore) GetSession(_ context.Context, key string) (auth.SessionData, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-		scope := bucket.Scope(config.Scope)
-		collection := scope.Collection(config.Collection)
+	session, ok := m.sessions[key]
+	if !ok {
+		return auth.SessionData{}, auth.ErrSessionNotFound
+	}
 
-		storeInstance = &auth.CouchbaseStore{
-			Cluster:    cluster,
-			Bucket:     bucket,
-			Collection: collection,
-		}
-	})
+	return session, nil
+}
 
-	return storeInstance, err
+func (m *memoryStore) DeleteSession(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.sessions[key]; !ok {
+		return auth.ErrSessionNotFound
+	}
+
+	delete(m.sessions, key)
+	return nil
 }
 
 func getTestAuth() *auth.Auth {
-	conf := auth.CouchbaseConfig{
-		ConnStr:    os.Getenv("CB_CONN_STR"), // örn: "couchbase://127.0.0.1"
-		Username:   os.Getenv("CB_USERNAME"), // örn: "Administrator"
-		Password:   os.Getenv("CB_PASSWORD"), // örn: "password"
-		BucketName: os.Getenv("CB_BUCKET"),   // örn: "auth-test"
-		Scope:      os.Getenv("CB_SCOPE"),
-		Collection: os.Getenv("CP_COLLECTION"),
-		Timeout:    5 * time.Second,
-	}
-	var perm []int
-	perm = append(perm, 1)
-	perm = append(perm, 2)
-	cs, err := GetCouchbaseStore(conf)
-	if err != nil {
-		panic(err)
-	}
-	cfg := &auth.Config{
-		JwtSecretKey:        "test-secret",
-		Couchbase:           cs,
-		EndpointPermissions: map[string][]int{"/protected": perm},
-	}
-
-	return auth.New(cfg)
+	return auth.New(&auth.Config{
+		JwtSecretKey: "test-secret",
+		CookieName:   "test_access_token",
+		SessionStore: newMemoryStore(),
+		EndpointPermissions: map[string][]int{
+			"/protected": {1, 2},
+		},
+	})
 }
 
-func TestCreateAccessToken_And_SaveSession(t *testing.T) {
+func TestCreateAccessTokenAndSaveSession(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -101,33 +82,39 @@ func TestCreateAccessToken_And_SaveSession(t *testing.T) {
 		t.Fatal("CreateAccessToken returned empty token")
 	}
 
-	// Couchbase kaydını kontrol edelim
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		t.Fatalf("token split expected 3 parts, got %d", len(parts))
 	}
-	signature := parts[2]
-	if err := authStr.GetSessionFromCouchbase("user123", signature); err != nil {
-		t.Fatalf("Session should exist in Couchbase: %v", err)
+
+	session, err := authStr.GetSession("user123", parts[2])
+	if err != nil {
+		t.Fatalf("session should exist in session store: %v", err)
+	}
+	if session.UserAgent != "TestAgent" {
+		t.Fatalf("expected stored user agent to be TestAgent, got %q", session.UserAgent)
 	}
 }
 
-func TestMiddleware_With_ValidToken(t *testing.T) {
+func TestVerifyToken(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1, 2}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1, 2}, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
 
-	tokenParts := strings.Split(token, ".")
-	if len(tokenParts) != 3 {
-		t.Errorf("token split expected 3 parts, got %d", len(tokenParts))
+	if err := authStr.VerifyToken(token); err != nil {
+		t.Fatalf("VerifyToken error: %v", err)
 	}
+}
 
-	err = authStr.TokenVerify(tokenParts[2])
+func TestMiddlewareWithValidToken(t *testing.T) {
+	authStr := getTestAuth()
+
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1, 2}, nil, nil)
 	if err != nil {
-		t.Fatalf("TokenVerify error: %v", err)
+		t.Fatalf("CreateAccessToken error: %v", err)
 	}
 
 	app := fiber.New()
@@ -139,13 +126,16 @@ func TestMiddleware_With_ValidToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, _ := app.Test(req, -1)
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test error: %v", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
 }
 
-func TestMiddleware_With_InvalidToken(t *testing.T) {
+func TestMiddlewareWithInvalidToken(t *testing.T) {
 	authStr := getTestAuth()
 
 	app := fiber.New()
@@ -157,49 +147,21 @@ func TestMiddleware_With_InvalidToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer invalid.token.value")
 
-	resp, _ := app.Test(req, -1)
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test error: %v", err)
+	}
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", resp.StatusCode)
 	}
 }
 
-func TestCreateAccessToken_And_SaveSessionWithCookie(t *testing.T) {
+func TestMiddlewareWithCookie(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{1}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{2}, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
-	}
-	if token == "" {
-		t.Fatal("CreateAccessToken returned empty token")
-	}
-
-	// Couchbase kaydını kontrol edelim (signature = token'ın 3. parçası)
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		t.Fatalf("token split expected 3 parts, got %d", len(parts))
-	}
-	signature := parts[2]
-	if err := authStr.GetSessionFromCouchbase("user123", signature); err != nil {
-		t.Fatalf("Session should exist in Couchbase: %v", err)
-	}
-}
-
-func TestMiddleware_With_ValidTokenWithCookie(t *testing.T) {
-	authStr := getTestAuth()
-
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", []int{2}, nil, nil)
-	if err != nil {
-		t.Fatalf("CreateAccessToken error: %v", err)
-	}
-
-	// İmza doğrulaması (CreateAccessToken içinde a.Header/a.Payload set edildiği için çalışır)
-	tokenParts := strings.Split(token, ".")
-	if len(tokenParts) != 3 {
-		t.Errorf("token split expected 3 parts, got %d", len(tokenParts))
-	}
-	if err := authStr.TokenVerify(tokenParts[2]); err != nil {
-		t.Fatalf("TokenVerify error: %v", err)
 	}
 
 	app := fiber.New()
@@ -209,7 +171,6 @@ func TestMiddleware_With_ValidTokenWithCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	// Cookie tabanlı akış: access_token cookie’sini set et
 	req.AddCookie(&http.Cookie{
 		Name:  "test_access_token",
 		Value: token,
@@ -225,7 +186,7 @@ func TestMiddleware_With_ValidTokenWithCookie(t *testing.T) {
 	}
 }
 
-func TestMiddleware_With_InvalidTokenWithCookie(t *testing.T) {
+func TestMiddlewareWithoutAccessTokenCookie(t *testing.T) {
 	authStr := getTestAuth()
 
 	app := fiber.New()
@@ -235,12 +196,6 @@ func TestMiddleware_With_InvalidTokenWithCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	// Geçersiz/bozuk JWT yapısında cookie set edelim
-	req.AddCookie(&http.Cookie{
-		Name:  "access_token",
-		Value: "invalid.token.value",
-		Path:  "/",
-	})
 
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -251,24 +206,57 @@ func TestMiddleware_With_InvalidTokenWithCookie(t *testing.T) {
 	}
 }
 
-// (İsteğe bağlı) Cookie hiç yoksa 401 dönüyor mu?
-func TestMiddleware_WithoutAccessTokenCookie(t *testing.T) {
+func TestDeleteSession(t *testing.T) {
 	authStr := getTestAuth()
 
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAccessToken error: %v", err)
+	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token split expected 3 parts, got %d", len(parts))
+	}
+
+	if err := authStr.DeleteSession("user123", parts[2]); err != nil {
+		t.Fatalf("DeleteSession error: %v", err)
+	}
+
+	if _, err := authStr.GetSession("user123", parts[2]); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound after delete, got %v", err)
+	}
+}
+
+func TestAllUserPermissionAllowsRolelessUsers(t *testing.T) {
+	authStr := auth.New(&auth.Config{
+		JwtSecretKey: "test-secret",
+		CookieName:   "test_access_token",
+		SessionStore: newMemoryStore(),
+		EndpointPermissions: map[string][]int{
+			"/protected": {auth.AllUser},
+		},
+	})
+
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAccessToken error: %v", err)
+	}
+
 	app := fiber.New()
-	app.Use(authStr.MiddlewareWithCookie)
+	app.Use(authStr.Middleware)
 	app.Get("/protected", func(c *fiber.Ctx) error {
 		return c.SendString("OK")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	// Bilerek cookie set etmiyoruz
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := app.Test(req, -1)
 	if err != nil {
 		t.Fatalf("app.Test error: %v", err)
 	}
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected status 401, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
 }

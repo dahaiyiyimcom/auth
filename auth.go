@@ -5,169 +5,150 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/couchbase/gocb/v2"
-	"github.com/dahaiyiyimcom/auth/v4/pkg"
 	"strings"
 	"time"
 
+	"github.com/dahaiyiyimcom/auth/v5/pkg"
 	"github.com/gofiber/fiber/v2"
 )
 
 type Auth struct {
-	Header              string
-	Payload             string
 	JwtSecretKey        []byte
-	AccessToken         string
 	CookieName          string
-	Couchbase           *CouchbaseStore
+	SessionStore        SessionStore
 	EndPointPermissions map[string][]int
+	AccessTokenTTL      time.Duration
+	StoreTimeout        time.Duration
 }
 
 func New(config *Config) *Auth {
-	auth := &Auth{
+	config.init()
+
+	return &Auth{
 		JwtSecretKey:        []byte(config.JwtSecretKey),
 		CookieName:          config.CookieName,
-		Couchbase:           config.Couchbase,
+		SessionStore:        config.SessionStore,
 		EndPointPermissions: config.EndpointPermissions,
+		AccessTokenTTL:      config.AccessTokenTTL,
+		StoreTimeout:        config.StoreTimeout,
 	}
-	return auth
 }
 
-// CreateAccessToken generates a new JWT token with the given user information
+// CreateAccessToken generates a new JWT token with the given user information.
 func (a *Auth) CreateAccessToken(uuid, userAgent string, email *string, roles []int, shopId, companyId *int) (string, error) {
+	now := time.Now()
 	payload := PayloadConfig{
 		Uuid:      uuid,
 		Roles:     roles,
 		Email:     email,
 		ShopID:    shopId,
 		CompanyID: companyId,
-		ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
-		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: now.Add(a.AccessTokenTTL).Unix(),
+		IssuedAt:  now.Unix(),
 	}
 
-	// Use CreateJWT to generate token and signature
-	var token, signature string
-	var err error
-	a.Header, a.Payload, token, signature, err = CreateJWT(a.JwtSecretKey, payload)
+	_, encodedPayload, token, signature, err := CreateJWT(a.JwtSecretKey, payload)
 	if err != nil {
 		return "", err
 	}
 
-	// Save session in Couchbase
-	err = a.SaveSessionToCouchbase(uuid, signature, userAgent)
-	if err != nil {
+	session := SessionData{
+		Payload:   encodedPayload,
+		UserAgent: userAgent,
+		CreatedAt: now.Unix(),
+		ExpiresAt: payload.ExpiresAt,
+	}
+
+	if err := a.SaveSession(uuid, signature, session); err != nil {
 		return "", err
 	}
 
 	return token, nil
 }
 
-// TokenVerify verifies the token signature
-func (a *Auth) TokenVerify(signature string) error {
-	return VerifyJWT(a.JwtSecretKey, a.Header, a.Payload, signature)
+// VerifyToken validates the token structure, signature, and expiration.
+func (a *Auth) VerifyToken(accessToken string) error {
+	_, _, err := a.validateAccessToken(accessToken)
+	return err
 }
 
-// GetUUID extracts the UUID from the token
+// GetUUID extracts the UUID from an Authorization header.
 func (a *Auth) GetUUID(authHeader string) (string, error) {
 	if authHeader == "" {
 		return "", errors.New("invalid token")
 	}
-	if !strings.HasPrefix(authHeader, "Bearer ") {
+
+	token, ok := bearerTokenFromHeader(authHeader)
+	if !ok {
 		return "", errors.New("malformed token")
 	}
 
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	authTokenParts := strings.Split(token, ".")
-	if len(authTokenParts) != 3 {
-		return "", errors.New("malformed token")
-	}
-
-	payloadBase64, _ := base64.RawURLEncoding.DecodeString(authTokenParts[1])
-	var payload PayloadConfig
-	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
-		return "", errors.New(err.Error())
-	}
-
-	return payload.Uuid, nil
-}
-func (a *Auth) GetUUIDFromCookie(token string) (string, error) {
-
-	_, payloadPart, _, err := SplitJWT(token)
+	payload, err := decodeTokenPayload(token)
 	if err != nil {
 		return "", err
 	}
 
-	payloadBase64, _ := base64.RawURLEncoding.DecodeString(payloadPart)
-	var payload PayloadConfig
-	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
-		return "", errors.New(err.Error())
+	return payload.Uuid, nil
+}
+
+func (a *Auth) GetUUIDFromCookie(token string) (string, error) {
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return "", err
 	}
 
 	return payload.Uuid, nil
 }
 
-// GetShopID extracts the ShopID from the token
+// GetShopID extracts the ShopID from an Authorization header.
 func (a *Auth) GetShopID(authHeader string) (int, error) {
 	if authHeader == "" {
 		return 0, errors.New("invalid token")
 	}
-	if !strings.HasPrefix(authHeader, "Bearer ") {
+
+	token, ok := bearerTokenFromHeader(authHeader)
+	if !ok {
 		return 0, errors.New("malformed token")
 	}
 
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	authTokenParts := strings.Split(token, ".")
-	if len(authTokenParts) != 3 {
-		return 0, errors.New("malformed token")
-	}
-
-	payloadBase64, _ := base64.RawURLEncoding.DecodeString(authTokenParts[1])
-	var payload PayloadConfig
-	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
-		return 0, errors.New(err.Error())
-	}
-
-	if payload.ShopID == nil {
-		return 0, errors.New("shopID is nil")
-	}
-
-	return *payload.ShopID, nil
-}
-func (a *Auth) GetShopIDFromCookie(token string) (int, error) {
-	_, payloadPart, _, err := SplitJWT(token)
+	payload, err := decodeTokenPayload(token)
 	if err != nil {
 		return 0, err
 	}
-	var payload PayloadConfig
-	payloadBase64, _ := base64.RawURLEncoding.DecodeString(payloadPart)
-	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
-		return 0, errors.New(err.Error())
+
+	if payload.ShopID == nil {
+		return 0, errors.New("shopID is nil")
+	}
+
+	return *payload.ShopID, nil
+}
+
+func (a *Auth) GetShopIDFromCookie(token string) (int, error) {
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return 0, err
 	}
 	if payload.ShopID == nil {
 		return 0, errors.New("shopID is nil")
 	}
+
 	return *payload.ShopID, nil
 }
 
-// GetCompanyID extracts the CompanyID from the token
+// GetCompanyID extracts the CompanyID from an Authorization header.
 func (a *Auth) GetCompanyID(authHeader string) (int, error) {
 	if authHeader == "" {
 		return 0, errors.New("invalid token")
 	}
-	if !strings.HasPrefix(authHeader, "Bearer ") {
+
+	token, ok := bearerTokenFromHeader(authHeader)
+	if !ok {
 		return 0, errors.New("malformed token")
 	}
 
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	authTokenParts := strings.Split(token, ".")
-	if len(authTokenParts) != 3 {
-		return 0, errors.New("malformed token")
-	}
-
-	payloadBase64, _ := base64.RawURLEncoding.DecodeString(authTokenParts[1])
-	var payload PayloadConfig
-	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
-		return 0, errors.New(err.Error())
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return 0, err
 	}
 
 	if payload.CompanyID == nil {
@@ -176,70 +157,45 @@ func (a *Auth) GetCompanyID(authHeader string) (int, error) {
 
 	return *payload.CompanyID, nil
 }
+
 func (a *Auth) GetCompanyIDFromCookie(token string) (int, error) {
-	_, payloadPart, _, err := SplitJWT(token)
+	payload, err := decodeTokenPayload(token)
 	if err != nil {
 		return 0, err
-	}
-	var payload PayloadConfig
-	payloadBase64, _ := base64.RawURLEncoding.DecodeString(payloadPart)
-	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
-		return 0, errors.New(err.Error())
 	}
 	if payload.CompanyID == nil {
 		return 0, errors.New("shopID is nil")
 	}
+
 	return *payload.CompanyID, nil
 }
 
-// Middleware performs authentication and authorization
+// Middleware performs authentication and authorization with the Authorization header.
 func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 	var response Response
-	// 1. Authorization header check
+
 	authHeader := ctx.Get("Authorization")
 	if authHeader == "" {
 		response.Message = "missing authorization header"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
-	if !strings.HasPrefix(authHeader, "Bearer ") {
+
+	accessToken, ok := bearerTokenFromHeader(authHeader)
+	if !ok {
 		response.Message = "invalid authorization format"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
-	// 2. Parse token
-	a.AccessToken = strings.TrimPrefix(authHeader, "Bearer ")
-	tokenParts := strings.Split(a.AccessToken, ".")
-	if len(tokenParts) != 3 {
-		response.Message = "malformed token"
-		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+
+	payload, signature, err := a.validateAccessToken(accessToken)
+	if err != nil {
+		return authErrorResponse(ctx, err, &response)
 	}
 
-	headerPart, payloadPart, signature := tokenParts[0], tokenParts[1], tokenParts[2]
-	a.Header, a.Payload = headerPart, payloadPart
-	// 3. Decode payload
-	payload, err := DecodePayload(payloadPart)
-	if err != nil {
-		response.Message = "invalid payload"
-		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
-	}
-	// 4. Verify signature
-	if err := VerifyJWT(a.JwtSecretKey, headerPart, payloadPart, signature); err != nil {
-		response.Message = "invalid token signature"
-		return response.HttpResponse(ctx, fiber.StatusForbidden)
-	}
-	// 5. Check expiration
-	if payload.ExpiresAt < time.Now().Unix() {
-		response.Message = "token expired"
-		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
-	}
-
-	// 6. Validate session in Couchbase
-	err = a.GetSessionFromCouchbase(payload.Uuid, signature)
-	if err != nil {
+	if _, err := a.GetSession(payload.Uuid, signature); err != nil {
 		response.Message = "session not found or invalid"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
 
-	// 7. Authorization: Check user roles for the requested endpoint
 	requestedPath := ctx.Path()
 	matchedPermission, matched := pkg.MatchPathWithPermission(requestedPath, a.EndPointPermissions)
 	if !matched {
@@ -247,7 +203,6 @@ func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 		return response.HttpResponse(ctx, fiber.StatusForbidden)
 	}
 
-	// Check if user's roles include the required permission
 	if !PermissionsContains(payload.Roles, matchedPermission) {
 		response.Message = "access denied"
 		return response.HttpResponse(ctx, fiber.StatusForbidden)
@@ -256,53 +211,26 @@ func (a *Auth) Middleware(ctx *fiber.Ctx) error {
 	return ctx.Next()
 }
 
+// MiddlewareWithCookie performs authentication and authorization with the configured cookie.
 func (a *Auth) MiddlewareWithCookie(ctx *fiber.Ctx) error {
 	var response Response
 
-	// 1. Auth cookie check
 	accessToken, ok := GetAccessTokenCookie(ctx, a.CookieName)
 	if !ok {
 		response.Message = "access token missing"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
 
-	headerPart, payloadPart, signature, err := SplitJWT(accessToken)
+	payload, signature, err := a.validateAccessToken(accessToken)
 	if err != nil {
-		response.Message = "malformed token"
-		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+		return authErrorResponse(ctx, err, &response)
 	}
 
-	// a üzerinde sakla (TokenVerify vb. için)
-	a.AccessToken = accessToken
-	a.Header = headerPart
-	a.Payload = payloadPart
-
-	// 2. Decode payload
-	payload, err := DecodePayload(payloadPart) // mevcut helper'ınızı kullanıyoruz
-	if err != nil {
-		response.Message = "invalid payload"
-		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
-	}
-
-	// 3. Verify signature
-	if err := VerifyJWT(a.JwtSecretKey, headerPart, payloadPart, signature); err != nil {
-		response.Message = "invalid token signature"
-		return response.HttpResponse(ctx, fiber.StatusForbidden)
-	}
-
-	// 4. Check expiration
-	if payload.ExpiresAt < time.Now().Unix() {
-		response.Message = "token expired"
-		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
-	}
-
-	// 5. Validate session in Couchbase
-	if err := a.GetSessionFromCouchbase(payload.Uuid, signature); err != nil {
+	if _, err := a.GetSession(payload.Uuid, signature); err != nil {
 		response.Message = "session not found or invalid"
 		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
 	}
 
-	// 6. Authorization: Check user roles for the requested endpoint
 	requestedPath := ctx.Path()
 	matchedPermission, matched := pkg.MatchPathWithPermission(requestedPath, a.EndPointPermissions)
 	if !matched {
@@ -317,40 +245,30 @@ func (a *Auth) MiddlewareWithCookie(ctx *fiber.Ctx) error {
 	return ctx.Next()
 }
 
-func (a *Auth) SaveSessionToCouchbase(uuid, tokenSignature, userAgent string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (a *Auth) SaveSession(uuid, tokenSignature string, session SessionData) error {
+	ctx, cancel := context.WithTimeout(context.Background(), a.StoreTimeout)
 	defer cancel()
 
-	key := uuid + ":" + tokenSignature
-
-	session := SessionData{
-		Payload:   a.Payload,
-		UserAgent: userAgent,
-		CreatedAt: time.Now().Unix(),
+	ttl := time.Until(time.Unix(session.ExpiresAt, 0))
+	if ttl <= 0 {
+		return errors.New("session ttl expired")
 	}
 
-	_, err := a.Couchbase.Collection.Upsert(key, session, &gocb.UpsertOptions{Context: ctx})
-	return err
+	return a.SessionStore.SaveSession(ctx, sessionKey(uuid, tokenSignature), session, ttl)
 }
 
-func (a *Auth) GetSessionFromCouchbase(uuid, tokenSignature string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (a *Auth) GetSession(uuid, tokenSignature string) (SessionData, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.StoreTimeout)
 	defer cancel()
 
-	key := uuid + ":" + tokenSignature
-
-	_, err := a.Couchbase.Collection.Get(key, &gocb.GetOptions{Context: ctx})
-	return err
+	return a.SessionStore.GetSession(ctx, sessionKey(uuid, tokenSignature))
 }
 
-func (a *Auth) DeleteSessionFromCouchbase(uuid, tokenSignature string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (a *Auth) DeleteSession(uuid, tokenSignature string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), a.StoreTimeout)
 	defer cancel()
 
-	key := uuid + ":" + tokenSignature
-
-	_, err := a.Couchbase.Collection.Remove(key, &gocb.RemoveOptions{Context: ctx})
-	return err
+	return a.SessionStore.DeleteSession(ctx, sessionKey(uuid, tokenSignature))
 }
 
 func GetAccessTokenCookie(c *fiber.Ctx, cookieName string) (string, bool) {
@@ -363,5 +281,69 @@ func GetAccessTokenCookie(c *fiber.Ctx, cookieName string) (string, bool) {
 			found = true
 		}
 	})
+
 	return value, found
+}
+
+func bearerTokenFromHeader(authHeader string) (string, bool) {
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		return "", false
+	}
+
+	return strings.TrimPrefix(authHeader, "Bearer "), true
+}
+
+func decodeTokenPayload(token string) (PayloadConfig, error) {
+	_, payloadPart, _, err := SplitJWT(token)
+	if err != nil {
+		return PayloadConfig{}, err
+	}
+
+	payloadBase64, err := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err != nil {
+		return PayloadConfig{}, err
+	}
+
+	var payload PayloadConfig
+	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
+		return PayloadConfig{}, err
+	}
+
+	return payload, nil
+}
+
+func (a *Auth) validateAccessToken(accessToken string) (PayloadConfig, string, error) {
+	headerPart, payloadPart, signature, err := SplitJWT(accessToken)
+	if err != nil {
+		return PayloadConfig{}, "", errors.New("malformed token")
+	}
+
+	payload, err := DecodePayload(payloadPart)
+	if err != nil {
+		return PayloadConfig{}, "", errors.New("invalid payload")
+	}
+
+	if err := VerifyJWT(a.JwtSecretKey, headerPart, payloadPart, signature); err != nil {
+		return PayloadConfig{}, "", errors.New("invalid token signature")
+	}
+
+	if payload.ExpiresAt < time.Now().Unix() {
+		return PayloadConfig{}, "", errors.New("token expired")
+	}
+
+	return payload, signature, nil
+}
+
+func authErrorResponse(ctx *fiber.Ctx, err error, response *Response) error {
+	switch err.Error() {
+	case "invalid token signature":
+		response.Message = err.Error()
+		return response.HttpResponse(ctx, fiber.StatusForbidden)
+	case "malformed token", "invalid payload", "token expired":
+		response.Message = err.Error()
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	default:
+		response.Message = "invalid token"
+		return response.HttpResponse(ctx, fiber.StatusUnauthorized)
+	}
 }
