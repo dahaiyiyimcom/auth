@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"time"
@@ -20,6 +21,16 @@ type RedisConfig struct {
 	WriteTimeout   time.Duration
 	ConnectTimeout time.Duration
 	KeyPrefix      string
+
+	// TLS enables a verified TLS 1.2+ connection: the server certificate is
+	// checked against the system CA pool (verification is never skipped). Leave
+	// false for a plaintext local/stage Redis; set true for a managed PROD Redis
+	// with in-transit encryption.
+	TLS bool
+	// TLSConfig overrides the default verified config when a custom one is
+	// required (e.g. a private CA bundle). When non-nil it takes precedence and
+	// implies TLS. Callers must not disable verification here.
+	TLSConfig *tls.Config
 }
 
 type RedisStore struct {
@@ -32,7 +43,7 @@ func NewRedisStore(config RedisConfig) (*RedisStore, error) {
 		return nil, errors.New("redis addr is required")
 	}
 
-	client := redis.NewClient(&redis.Options{
+	opts := &redis.Options{
 		Addr:         config.Addr,
 		Password:     config.Password,
 		DB:           config.DB,
@@ -41,7 +52,16 @@ func NewRedisStore(config RedisConfig) (*RedisStore, error) {
 		DialTimeout:  config.DialTimeout,
 		ReadTimeout:  config.ReadTimeout,
 		WriteTimeout: config.WriteTimeout,
-	})
+	}
+	switch {
+	case config.TLSConfig != nil:
+		opts.TLSConfig = config.TLSConfig
+	case config.TLS:
+		// Verified by default: system CA pool, no skip-verify.
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+
+	client := redis.NewClient(opts)
 
 	connectTimeout := config.ConnectTimeout
 	if connectTimeout <= 0 {
