@@ -60,7 +60,7 @@ api.Use(a.MiddlewareWithCookie)
 `CreateAccessToken` generates the JWT and persists a matching Redis session keyed as `uuid:tokenSignature`.
 
 ```go
-token, err := a.CreateAccessToken("uuid-123", "user-agent-data", nil, []int{auth.Admin}, nil, nil)
+token, err := a.CreateAccessToken("uuid-123", "user-agent-data", nil, []int{auth.Admin}, nil, nil, nil, nil)
 if err != nil {
     panic(err)
 }

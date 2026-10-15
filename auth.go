@@ -35,16 +35,18 @@ func New(config *Config) *Auth {
 }
 
 // CreateAccessToken generates a new JWT token with the given user information.
-func (a *Auth) CreateAccessToken(uuid, userAgent string, email *string, roles []int, shopId, companyId *int) (string, error) {
+func (a *Auth) CreateAccessToken(uuid, userAgent string, email *string, roles []int, shopId, companyId *int, shopUuid, companyUuid *string) (string, error) {
 	now := time.Now()
 	payload := PayloadConfig{
-		Uuid:      uuid,
-		Roles:     roles,
-		Email:     email,
-		ShopID:    shopId,
-		CompanyID: companyId,
-		ExpiresAt: now.Add(a.AccessTokenTTL).Unix(),
-		IssuedAt:  now.Unix(),
+		Uuid:        uuid,
+		Roles:       roles,
+		Email:       email,
+		ShopID:      shopId,
+		CompanyID:   companyId,
+		ShopUUID:    shopUuid,
+		CompanyUUID: companyUuid,
+		ExpiresAt:   now.Add(a.AccessTokenTTL).Unix(),
+		IssuedAt:    now.Unix(),
 	}
 
 	_, encodedPayload, token, signature, err := CreateJWT(a.JwtSecretKey, payload)
@@ -168,6 +170,76 @@ func (a *Auth) GetCompanyIDFromCookie(token string) (int, error) {
 	}
 
 	return *payload.CompanyID, nil
+}
+
+// GetShopUUID extracts the ShopUUID from an Authorization header.
+func (a *Auth) GetShopUUID(authHeader string) (string, error) {
+	if authHeader == "" {
+		return "", errors.New("invalid token")
+	}
+
+	token, ok := bearerTokenFromHeader(authHeader)
+	if !ok {
+		return "", errors.New("malformed token")
+	}
+
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return "", err
+	}
+
+	if payload.ShopUUID == nil {
+		return "", errors.New("shopUUID is nil")
+	}
+
+	return *payload.ShopUUID, nil
+}
+
+func (a *Auth) GetShopUUIDFromCookie(token string) (string, error) {
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return "", err
+	}
+	if payload.ShopUUID == nil {
+		return "", errors.New("shopUUID is nil")
+	}
+
+	return *payload.ShopUUID, nil
+}
+
+// GetCompanyUUID extracts the CompanyUUID from an Authorization header.
+func (a *Auth) GetCompanyUUID(authHeader string) (string, error) {
+	if authHeader == "" {
+		return "", errors.New("invalid token")
+	}
+
+	token, ok := bearerTokenFromHeader(authHeader)
+	if !ok {
+		return "", errors.New("malformed token")
+	}
+
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return "", err
+	}
+
+	if payload.CompanyUUID == nil {
+		return "", errors.New("companyUUID is nil")
+	}
+
+	return *payload.CompanyUUID, nil
+}
+
+func (a *Auth) GetCompanyUUIDFromCookie(token string) (string, error) {
+	payload, err := decodeTokenPayload(token)
+	if err != nil {
+		return "", err
+	}
+	if payload.CompanyUUID == nil {
+		return "", errors.New("companyUUID is nil")
+	}
+
+	return *payload.CompanyUUID, nil
 }
 
 // Middleware performs authentication and authorization with the Authorization header.

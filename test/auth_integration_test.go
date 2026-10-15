@@ -74,7 +74,7 @@ func getTestAuth() *auth.Auth {
 func TestCreateAccessTokenAndSaveSession(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestCreateAccessTokenAndSaveSession(t *testing.T) {
 func TestVerifyToken(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1, 2}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1, 2}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestVerifyToken(t *testing.T) {
 func TestMiddlewareWithValidToken(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1, 2}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1, 2}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestMiddlewareWithInvalidToken(t *testing.T) {
 func TestMiddlewareWithCookie(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{2}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{2}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestMiddlewareWithoutAccessTokenCookie(t *testing.T) {
 func TestDeleteSession(t *testing.T) {
 	authStr := getTestAuth()
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestAllUserPermissionAllowsRolelessUsers(t *testing.T) {
 		},
 	})
 
-	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, nil, nil, nil)
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateAccessToken error: %v", err)
 	}
