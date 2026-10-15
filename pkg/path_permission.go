@@ -2,14 +2,47 @@ package pkg
 
 import "strings"
 
-// MatchPathWithPermission matches the requested path with defined permissions
+// MatchPathWithPermission matches the requested path with defined permissions.
+// When several patterns match, the most specific one wins (see moreSpecific),
+// so e.g. /product/list takes precedence over /product/:id regardless of map
+// iteration order.
 func MatchPathWithPermission(requestedPath string, dynamicPermissions map[string][]int) ([]int, bool) {
+	var (
+		bestPattern    string
+		bestPermission []int
+		found          bool
+	)
+
 	for pattern, permission := range dynamicPermissions {
-		if matchRoute(pattern, requestedPath) {
-			return permission, true
+		if !matchRoute(pattern, requestedPath) {
+			continue
+		}
+		if !found || moreSpecific(pattern, bestPattern) {
+			bestPattern, bestPermission, found = pattern, permission, true
 		}
 	}
-	return nil, false
+
+	return bestPermission, found
+}
+
+// moreSpecific reports whether pattern a takes precedence over pattern b when
+// both match the same path. Segments are compared left to right and, at the
+// first position where one is static and the other a parameter, the static one
+// wins. Equally specific patterns are ordered lexically so the result never
+// depends on map iteration order.
+func moreSpecific(a, b string) bool {
+	aParts := strings.Split(strings.Trim(a, "/"), "/")
+	bParts := strings.Split(strings.Trim(b, "/"), "/")
+
+	for i := 0; i < len(aParts) && i < len(bParts); i++ {
+		aParam := strings.HasPrefix(aParts[i], ":")
+		bParam := strings.HasPrefix(bParts[i], ":")
+		if aParam != bParam {
+			return !aParam
+		}
+	}
+
+	return a < b
 }
 
 // matchRoute compares a route pattern with an actual path
