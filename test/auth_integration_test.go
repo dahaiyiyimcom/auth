@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -258,5 +259,61 @@ func TestAllUserPermissionAllowsRolelessUsers(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestFromCookieVerifiesSignature ensures the cookie identity helpers reject a
+// token whose payload was tampered with (forged claims kept with a stale/invalid
+// signature) instead of trusting the forged claims — the gap the security scan
+// flagged.
+func TestFromCookieVerifiesSignature(t *testing.T) {
+	authStr := getTestAuth()
+	shopID := 7
+	token, err := authStr.CreateAccessToken("user123", "TestAgent", nil, []int{1}, &shopID, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateAccessToken error: %v", err)
+	}
+
+	// A genuine token resolves its claims.
+	if uuid, err := authStr.GetUUIDFromCookie(token); err != nil || uuid != "user123" {
+		t.Fatalf("GetUUIDFromCookie on valid token = %q, %v; want user123", uuid, err)
+	}
+	if got, err := authStr.GetShopIDFromCookie(token); err != nil || got != shopID {
+		t.Fatalf("GetShopIDFromCookie on valid token = %d, %v; want %d", got, err, shopID)
+	}
+
+	// Tamper the payload (bump shop_id) but keep the original signature.
+	parts := strings.Split(token, ".")
+	forgedPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"uuid":"attacker","roles":[1],"shop_id":999999}`))
+	forged := parts[0] + "." + forgedPayload + "." + parts[2]
+
+	if _, err := authStr.GetUUIDFromCookie(forged); err == nil {
+		t.Fatal("GetUUIDFromCookie accepted a token with a payload that does not match its signature")
+	}
+	if _, err := authStr.GetShopIDFromCookie(forged); err == nil {
+		t.Fatal("GetShopIDFromCookie accepted a forged shop_id")
+	}
+}
+
+// TestGetAccessTokenCookieFirstWins ensures GetAccessTokenCookie returns the
+// FIRST cookie of the configured name, matching fasthttp's ctx.Cookies used by
+// handlers. Otherwise a request with two cookies of the same name could pass the
+// middleware on one and be read by a handler as the other (duplicate-cookie bypass).
+func TestGetAccessTokenCookieFirstWins(t *testing.T) {
+	app := fiber.New()
+	var got string
+	app.Get("/", func(c *fiber.Ctx) error {
+		v, _ := auth.GetAccessTokenCookie(c, "test_access_token")
+		got = v
+		return c.SendStatus(200)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Add("Cookie", "test_access_token=first")
+	req.Header.Add("Cookie", "test_access_token=second")
+	if _, err := app.Test(req); err != nil {
+		t.Fatalf("app.Test error: %v", err)
+	}
+	if got != "first" {
+		t.Fatalf("GetAccessTokenCookie = %q; want first (handlers read the first cookie)", got)
 	}
 }
