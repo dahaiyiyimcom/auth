@@ -94,7 +94,7 @@ func (a *Auth) GetUUID(authHeader string) (string, error) {
 }
 
 func (a *Auth) GetUUIDFromCookie(token string) (string, error) {
-	payload, err := decodeTokenPayload(token)
+	payload, err := a.decodeVerifiedPayload(token)
 	if err != nil {
 		return "", err
 	}
@@ -126,7 +126,7 @@ func (a *Auth) GetShopID(authHeader string) (int, error) {
 }
 
 func (a *Auth) GetShopIDFromCookie(token string) (int, error) {
-	payload, err := decodeTokenPayload(token)
+	payload, err := a.decodeVerifiedPayload(token)
 	if err != nil {
 		return 0, err
 	}
@@ -161,7 +161,7 @@ func (a *Auth) GetCompanyID(authHeader string) (int, error) {
 }
 
 func (a *Auth) GetCompanyIDFromCookie(token string) (int, error) {
-	payload, err := decodeTokenPayload(token)
+	payload, err := a.decodeVerifiedPayload(token)
 	if err != nil {
 		return 0, err
 	}
@@ -196,7 +196,7 @@ func (a *Auth) GetShopUUID(authHeader string) (string, error) {
 }
 
 func (a *Auth) GetShopUUIDFromCookie(token string) (string, error) {
-	payload, err := decodeTokenPayload(token)
+	payload, err := a.decodeVerifiedPayload(token)
 	if err != nil {
 		return "", err
 	}
@@ -231,7 +231,7 @@ func (a *Auth) GetCompanyUUID(authHeader string) (string, error) {
 }
 
 func (a *Auth) GetCompanyUUIDFromCookie(token string) (string, error) {
-	payload, err := decodeTokenPayload(token)
+	payload, err := a.decodeVerifiedPayload(token)
 	if err != nil {
 		return "", err
 	}
@@ -347,7 +347,15 @@ func GetAccessTokenCookie(c *fiber.Ctx, cookieName string) (string, bool) {
 	var value string
 	found := false
 
+	// Take the FIRST matching cookie and stop. fasthttp's ctx.Cookies — which the
+	// service handlers use — returns the first cookie of a given name, so reading
+	// the last one here let a request carry two cookies of the same name and have
+	// the middleware authorize on one while a handler trusted the other. Matching
+	// the handlers' "first wins" closes that duplicate-cookie bypass.
 	c.Context().Request.Header.VisitAllCookie(func(key, val []byte) {
+		if found {
+			return
+		}
 		if strings.EqualFold(string(key), cookieName) {
 			value = string(val)
 			found = true
@@ -379,6 +387,30 @@ func decodeTokenPayload(token string) (PayloadConfig, error) {
 	var payload PayloadConfig
 	if err := json.Unmarshal(payloadBase64, &payload); err != nil {
 		return PayloadConfig{}, err
+	}
+
+	return payload, nil
+}
+
+// decodeVerifiedPayload decodes a token's payload only after verifying its HMAC
+// signature against the configured secret. The cookie helpers below use it so a
+// caller can never trust claims (uuid, shop_id, company_id, roles) from a forged
+// or tampered token. Expiry is intentionally not enforced here: these helpers run
+// after Middleware has already checked the session, and a renewable expired token
+// must still resolve its identity — the signature is what must hold.
+func (a *Auth) decodeVerifiedPayload(token string) (PayloadConfig, error) {
+	headerPart, payloadPart, signature, err := SplitJWT(token)
+	if err != nil {
+		return PayloadConfig{}, errors.New("malformed token")
+	}
+
+	if err := VerifyJWT(a.JwtSecretKey, headerPart, payloadPart, signature); err != nil {
+		return PayloadConfig{}, errors.New("invalid token signature")
+	}
+
+	payload, err := DecodePayload(payloadPart)
+	if err != nil {
+		return PayloadConfig{}, errors.New("invalid payload")
 	}
 
 	return payload, nil
